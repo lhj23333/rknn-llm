@@ -10,18 +10,22 @@ import argparse
 argparse = argparse.ArgumentParser()
 argparse.add_argument('--path', type=str, default='Qwen/Qwen2-VL-2B-Instruct', help='model path', required=False)
 argparse.add_argument('--target-platform', type=str, default='rk3588', help='target platform', required=False)
-argparse.add_argument('--num_npu_core', type=int, default=3, help='npu core num', required=False)
+argparse.add_argument('--num_npu_core', type=int, default=1, help='npu core num', required=False)
 argparse.add_argument('--quantized_dtype', type=str, default='w8a8', help='quantized dtype', required=False)
 argparse.add_argument('--device', type=str, default='cpu', help='device', required=False)
 argparse.add_argument('--savepath', type=str, default='qwen2_vl_2b_instruct.rkllm', help='save path', required=False)
+argparse.add_argument('--dataset', type=str, default='data/inputs.json', help='quant dataset')
 args = argparse.parse_args()
 
 modelpath = args.path
 target_platform = args.target_platform
 num_npu_core = args.num_npu_core
 quantized_dtype = args.quantized_dtype
+dataset = args.dataset
 
-savepath = os.path.join("./rkllm", os.path.basename(modelpath).lower() + "_" + quantized_dtype + "_"  + target_platform + ".rkllm")
+basename = os.path.basename(modelpath)
+default_savepath = os.path.join("./rkllm", basename + "_" + quantized_dtype + "_" + target_platform + ".rkllm")
+savepath = args.savepath if args.savepath else default_savepath
 os.makedirs(os.path.dirname(savepath), exist_ok=True)
 
 llm = RKLLM()
@@ -33,8 +37,6 @@ if ret != 0:
     exit(ret)
 
 # Build model
-dataset = 'data/inputs.json'
-
 qparams = None
 ret = llm.build(do_quantization=True, optimization_level=1, quantized_dtype=quantized_dtype,
                 quantized_algorithm='normal', target_platform=target_platform, num_npu_core=num_npu_core, extra_qparams=qparams, dataset=dataset)
@@ -44,6 +46,12 @@ if ret != 0:
     exit(ret)
 
 # # Export rkllm model
+default_savepath = os.path.join(
+    "./rkllm",
+    os.path.basename(modelpath).lower() + "_" + quantized_dtype + "_" + target_platform + ".rkllm"
+)
+savepath = args.savepath if args.savepath else default_savepath
+
 ret = llm.export_rkllm(savepath)
 if ret != 0:
     print('Export model failed!')

@@ -1,0 +1,16 @@
+rkllm_env/
+rknn_env/
+python=3.10/
+
+models/
+
+examples/multimodal_model_demo/data/inputs_embeds
+examples/multimodal_model_demo/data/*json
+examples/multimodal_model_demo/logs
+examples/multimodal_model_demo/onnx
+examples/multimodal_model_demo/rkllm
+examples/multimodal_model_demo/rknn
+
+AGENTS.md
+
+__pycache__/
