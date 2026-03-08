@@ -116,6 +116,7 @@ int main(int argc, char** argv)
     // param.img_end     = "";
     // param.img_content = "<｜▁pad▁｜>";
 
+
     if (argc == 7) {
         std::cerr << "[Warning] Using default img_start/img_end/img_content: "
                 << param.img_start << " , "
@@ -123,6 +124,8 @@ int main(int argc, char** argv)
                 << param.img_content
                 << ". Please customize these values according to your model, "
                 << "otherwise the output may be incorrect.\n";
+        std::cerr << "[Hint] Qwen3-VL tokens: <|vision_start|> <|vision_end|> <|image_pad|>\n";
+        std::cerr << "[Hint] InternVL3.5 tokens: <img> </img> <IMG_CONTEXT>\n";
     }
 
     if (argc > 7) param.img_start   = argv[7];

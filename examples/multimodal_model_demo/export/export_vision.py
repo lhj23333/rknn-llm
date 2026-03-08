@@ -111,7 +111,7 @@ class qwen2_5_vl_3b_vision(torch.nn.Module):
         return self.vpm(flatten_patches, grid_thw)
 
 class qwen3_vl_vision(torch.nn.Module):
-    def __init__(self, vlm, batch_size):
+    def __init__(self, vlm, batch_size, in_h, in_w):
         super(qwen3_vl_vision, self).__init__()
         self.merge_size = 2
         self.temporal_patch_size = 2
@@ -120,7 +120,17 @@ class qwen3_vl_vision(torch.nn.Module):
         self.vpm = vlm.visual
         self.batch_size = batch_size
 
-    def forward(self, pixel_value, grid_thw):
+        grid_t = batch_size // 2 if batch_size % 2 == 0 else batch_size // 2 + 1
+        grid_h = in_h // 16
+        grid_w = in_w // 16
+        self.register_buffer(
+            "grid_thw_const",
+            torch.tensor([[grid_t, grid_h, grid_w]], dtype=torch.int64)
+        )
+
+    def forward(self, pixel_value):
+        grid_thw = self.grid_thw_const
+
         if self.batch_size == 1:
             patches = pixel_value.repeat(self.temporal_patch_size, 1, 1, 1)
         elif self.batch_size % self.temporal_patch_size == 1:
@@ -128,13 +138,23 @@ class qwen3_vl_vision(torch.nn.Module):
             patches = torch.cat((pixel_value, repeat_image), dim=0)
         else:
             patches = pixel_value
+
         grid_t, grid_h, grid_w = grid_thw[0][0], grid_thw[0][1], grid_thw[0][2]
-        patches = patches.reshape(grid_t, self.temporal_patch_size, self.channel, 
-                                  grid_h//self.merge_size, self.merge_size, self.patch_size, grid_w//self.merge_size, self.merge_size, self.patch_size)
+        patches = patches.reshape(
+            grid_t, self.temporal_patch_size, self.channel,
+            grid_h // self.merge_size, self.merge_size, self.patch_size,
+            grid_w // self.merge_size, self.merge_size, self.patch_size
+        )
         patches = patches.permute(0, 3, 6, 4, 7, 2, 1, 5, 8)
-        flatten_patches = patches.reshape(grid_t * grid_h * grid_w, self.channel * self.temporal_patch_size * self.patch_size * self.patch_size)
-        
-        return self.vpm(flatten_patches, grid_thw)
+        flatten_patches = patches.reshape(
+            grid_t * grid_h * grid_w,
+            self.channel * self.temporal_patch_size * self.patch_size * self.patch_size
+        )
+
+        out = self.vpm(flatten_patches, grid_thw)
+        if isinstance(out, (tuple, list)):
+            out = out[0]
+        return out
 
 class smolvlm_vision(torch.nn.Module):
     def __init__(self, vlm):
@@ -197,11 +217,12 @@ if __name__ == "__main__":
     argparse.add_argument('--height', type=int, default=448, help='image height', required=False)
     argparse.add_argument('--width', type=int, default=448, help='image width', required=False)
     argparse.add_argument('--device', type=str, default="cpu", help='cpu or cuda', required=False)
+    argparse.add_argument('--savepath', type=str, default=None, help='onnx save path', required=False)
     args = argparse.parse_args()
 
     path = args.path
     model_name = args.model_name
-    savepath = os.path.join("./onnx", model_name + "_vision.onnx")
+    savepath = args.savepath or os.path.join("./onnx", model_name + "_vision.onnx")
     device_type = args.device
     os.makedirs(os.path.dirname(savepath), exist_ok=True)
     if model_name == 'minicpm-v-2_6':
@@ -236,7 +257,6 @@ if __name__ == "__main__":
                     (pixel_values, grid_thw), 
                     savepath,
                     input_names=['pixel', 'grid_thw'],
-                    dynamic_axes={'pixel': {2: 'height', 3: 'width'}},
                     opset_version=15)
     elif model_name == 'qwen3-vl':
         from transformers import Qwen3VLForConditionalGeneration
@@ -244,19 +264,20 @@ if __name__ == "__main__":
             path,
             torch_dtype=torch.float32, # 注意此处的数据类型，由于 rknn 目前仅支持 float32 ，因此需要指定；若是在加载权重时限制了数据类型，需要自行修改config.json中的 "use_flash_attn" 参数为 false
             low_cpu_mem_usage=True, _attn_implementation="eager",
-            trust_remote_code=True).eval().to(device_type)
+            trust_remote_code=True
+        ).eval().to(device_type)
+        
         pixel_values = torch.randn(args.batch_size, 3, args.height, args.width, device=model.device, dtype=torch.float32)
-        grid_thw = torch.tensor([[args.batch_size // 2 if args.batch_size% 2 == 0 else args.batch_size // 2 + 1, args.height//16, args.width//16]], dtype=torch.int64)
-        model.eval()
-        model = qwen3_vl_vision(model, args.batch_size)
-        out = model(pixel_values, grid_thw)
-        print("Output shape:", out[0].shape)
-        torch.onnx.export(model, 
-                    (pixel_values, grid_thw), 
-                    savepath,
-                    input_names=['pixel', 'grid_thw'],
-                    dynamic_axes={'pixel': {2: 'height', 3: 'width'}},
-                    opset_version=15)
+        model = qwen3_vl_vision(model, args.batch_size, args.height, args.width)
+        out = model(pixel_values)
+
+        torch.onnx.export(
+            model,
+            pixel_values,
+            savepath,
+            input_names=['pixel'],
+            opset_version=15
+        )
     elif model_name == 'smolvlm':
         from transformers import SmolVLMForConditionalGeneration
         model = SmolVLMForConditionalGeneration.from_pretrained(
@@ -296,6 +317,41 @@ if __name__ == "__main__":
         model = deepseekocr_vision(model.model)
         model = model.to(torch.float32).eval()
         torch.onnx.export(model, pixel_values, savepath, input_names=['pixel'], opset_version=18)
+    elif model_name in ['internvl3.5', 'internvl3_5', 'internvl3-5']:
+        model = AutoModel.from_pretrained(
+            path,
+            torch_dtype=torch.float32,
+            low_cpu_mem_usage=True,
+            trust_remote_code=True
+        ).eval().to(device_type)
+
+        pixel_values = torch.randn(
+            args.batch_size, 3, args.height, args.width,
+            device=model.device, dtype=torch.float32
+        )
+
+        if hasattr(model, "extract_feature"):
+            model.forward = model.extract_feature
+        elif hasattr(model, "extract_vision_feature"):
+            model.forward = model.extract_vision_feature
+        else:
+            raise ValueError("InternVL3.5 model has no extract_feature/extract_vision_feature")
+
+        model = model.to(torch.float32).eval()
+        out = model(pixel_values)
+        if isinstance(out, (tuple, list)):
+            print("Output shape:", out[0].shape)
+        else:
+            print("Output shape:", out.shape)
+
+        torch.onnx.export(
+            model,
+            pixel_values,
+            savepath,
+            input_names=['pixel'],
+            dynamic_axes={'pixel': {2: 'height', 3: 'width'}},
+            opset_version=15
+        )
     else:
         raise ValueError(f"Unsupported model name: {model_name}")
         exit(1)
